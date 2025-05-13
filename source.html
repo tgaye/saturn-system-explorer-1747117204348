@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saturn System Explorer</title>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.8.0/lib/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #canvas-container {
+            width: 100%;
+            max-width: 1200px;
+            height: 100vh;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            position: relative;
+        }
+        #info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.7);
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+
+<base target="_self">
+
+
+    <div id="canvas-container"></div>
+    <div id="info">Drag to rotate • Scroll to zoom • Click to toggle labels</div>
+
+    <script>
+        const sketch = (p) => {
+            let scene, camera, renderer;
+            let saturn, rings;
+            let moons = [];
+            let stars = [];
+            let labelsVisible = false;
+            let isDragging = false;
+            let previousMousePosition = { x: 0, y: 0 };
+            let autoRotate = true;
+            let autoRotateSpeed = 0.002;
+            let targetRotation = { x: 0, y: 0 };
+            let currentRotation = { x: 0, y: 0 };
+            let zoom = 5;
+            let targetZoom = 5;
+            let moonData = [
+                { name: "Titan", size: 0.2, distance: 3, speed: 0.002, color: 0xaaaaaa, orbitOffset: 0 },
+                { name: "Enceladus", size: 0.1, distance: 2, speed: 0.005, color: 0xffffff, orbitOffset: Math.PI/2 },
+                { name: "Rhea", size: 0.15, distance: 2.5, speed: 0.003, color: 0xcccccc, orbitOffset: Math.PI },
+                { name: "Mimas", size: 0.08, distance: 1.8, speed: 0.006, color: 0xdddddd, orbitOffset: Math.PI*1.5 }
+            ];
+            let labelElements = [];
+            let lastFrameTime = 0;
+            let frameRate = 60;
+            let quality = 1;
+
+            p.setup = () => {
+                const container = document.getElementById('canvas-container');
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                // Initialize Three.js
+                scene = new THREE.Scene();
+                camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(width, height);
+                renderer.setPixelRatio(window.devicePixelRatio * quality);
+                container.appendChild(renderer.domElement);
+
+                // Lighting
+                const ambientLight = new THREE.AmbientLight(0x333333);
+                scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(5, 3, 5);
+                scene.add(directionalLight);
+
+                // Backlight (sun)
+                const sunLight = new THREE.PointLight(0xffdd99, 2, 20);
+                sunLight.position.set(10, 5, 10);
+                scene.add(sunLight);
+
+                // Saturn
+                const saturnGeometry = new THREE.SphereGeometry(1, 64, 64);
+                const saturnTexture = createSaturnTexture();
+                const saturnMaterial = new THREE.MeshPhongMaterial({ 
+                    map: saturnTexture,
+                    bumpMap: saturnTexture,
+                    bumpScale: 0.05,
+                    shininess: 10
+                });
+                saturn = new THREE.Mesh(saturnGeometry, saturnMaterial);
+                scene.add(saturn);
+
+                // Rings
+                const ringsGeometry = new THREE.RingGeometry(1.5, 2.5, 64);
+                const ringsMaterial = new THREE.MeshPhongMaterial({
+                    map: createRingsTexture(),
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.8,
+                    shininess: 30
+                });
+                rings = new THREE.Mesh(ringsGeometry, ringsMaterial);
+                rings.rotation.x = Math.PI / 2;
+                scene.add(rings);
+
+                // Moons
+                moonData.forEach((moon, i) => {
+                    const geometry = new THREE.SphereGeometry(moon.size, 32, 32);
+                    const material = new THREE.MeshPhongMaterial({ color: moon.color });
+                    const moonMesh = new THREE.Mesh(geometry, material);
+                    
+                    // Position moon in orbit
+                    const angle = moon.orbitOffset;
+                    moonMesh.position.x = Math.cos(angle) * moon.distance;
+                    moonMesh.position.z = Math.sin(angle) * moon.distance;
+                    
+                    scene.add(moonMesh);
+                    moons.push({ mesh: moonMesh, data: moon, angle: angle });
+
+                    // Create label element
+                    const label = document.createElement('div');
+                    label.className = 'moon-label';
+                    label.textContent = moon.name;
+                    label.style.position = 'absolute';
+                    label.style.color = 'white';
+                    label.style.fontFamily = 'Arial, sans-serif';
+                    label.style.fontSize = '12px';
+                    label.style.pointerEvents = 'none';
+                    label.style.display = 'none';
+                    container.appendChild(label);
+                    labelElements.push(label);
+                });
+
+                // Stars
+                const starGeometry = new THREE.BufferGeometry();
+                const starMaterial = new THREE.PointsMaterial({
+                    color: 0xffffff,
+                    size: 0.05,
+                    transparent: true,
+                    opacity: 0.8
+                });
+
+                const starVertices = [];
+                for (let i = 0; i < 1000; i++) {
+                    const x = (Math.random() - 0.5) * 2000;
+                    const y = (Math.random() - 0.5) * 2000;
+                    const z = (Math.random() - 0.5) * 2000;
+                    starVertices.push(x, y, z);
+                }
+
+                starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+                const starField = new THREE.Points(starGeometry, starMaterial);
+                scene.add(starField);
+
+                // Camera position
+                camera.position.z = zoom;
+                targetRotation.y = Math.PI / 4;
+
+                // Event listeners
+                renderer.domElement.addEventListener('mousedown', onMouseDown);
+                renderer.domElement.addEventListener('mousemove', onMouseMove);
+                renderer.domElement.addEventListener('mouseup', onMouseUp);
+                renderer.domElement.addEventListener('wheel', onMouseWheel);
+                renderer.domElement.addEventListener('click', onClick);
+                window.addEventListener('resize', onWindowResize);
+
+                lastFrameTime = p.millis();
+            };
+
+            function createSaturnTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 512;
+                canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+
+                // Base color
+                ctx.fillStyle = '#e3d9b8';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Banding
+                const bandColors = ['#d4c9a0', '#f0e6c1', '#c9b88b', '#e8dbb5'];
+                for (let i = 0; i < 15; i++) {
+                    const y = Math.random() * canvas.height;
+                    const height = 10 + Math.random() * 20;
+                    ctx.fillStyle = bandColors[Math.floor(Math.random() * bandColors.length)];
+                    ctx.fillRect(0, y, canvas.width, height);
+                }
+
+                // Polar regions
+                const gradient = ctx.createRadialGradient(
+                    canvas.width/2, canvas.height/2, 0,
+                    canvas.width/2, canvas.height/2, canvas.width/2
+                );
+                gradient.addColorStop(0, 'rgba(227, 217, 184, 1)');
+                gradient.addColorStop(0.7, 'rgba(227, 217, 184, 1)');
+                gradient.addColorStop(1, 'rgba(180, 170, 140, 1)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const texture = new THREE.CanvasTexture(canvas);
+                return texture;
+            }
+
+            function createRingsTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1024;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+
+                // Gradient from inner to outer edge
+                const gradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
+                gradient.addColorStop(0, 'rgba(210, 200, 180, 0.8)');
+                gradient.addColorStop(0.3, 'rgba(230, 220, 200, 0.9)');
+                gradient.addColorStop(0.7, 'rgba(200, 190, 170, 0.7)');
+                gradient.addColorStop(1, 'rgba(180, 170, 150, 0.6)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Ring divisions
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+                ctx.lineWidth = 1;
+                for (let i = 0; i < 20; i++) {
+                    const x = Math.random() * canvas.width;
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, canvas.height);
+                    ctx.stroke();
+                }
+
+                // Add some noise for texture
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                for (let i = 0; i < data.length; i += 4) {
+                    const noise = Math.random() * 40 - 20;
+                    data[i] += noise;
+                    data[i + 1] += noise;
+                    data[i + 2] += noise;
+                }
+                ctx.putImageData(imageData, 0, 0);
+
+                const texture = new THREE.CanvasTexture(canvas);
+                return texture;
+            }
+
+            function onWindowResize() {
+                const container = document.getElementById('canvas-container');
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(width, height);
+            }
+
+            function onMouseDown(event) {
+                isDragging = true;
+                previousMousePosition = {
+                    x: event.clientX,
+                    y: event.clientY
+                };
+                autoRotate = false;
+            }
+
+            function onMouseMove(event) {
+                if (!isDragging) return;
+
+                const deltaMove = {
+                    x: event.clientX - previousMousePosition.x,
+                    y: event.clientY - previousMousePosition.y
+                };
+
+                targetRotation.y += deltaMove.x * 0.01;
+                targetRotation.x += deltaMove.y * 0.01;
+                targetRotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, targetRotation.x));
+
+                previousMousePosition = {
+                    x: event.clientX,
+                    y: event.clientY
+                };
+            }
+
+            function onMouseUp() {
+                isDragging = false;
+                autoRotate = true;
+            }
+
+            function onMouseWheel(event) {
+                event.preventDefault();
+                targetZoom += event.deltaY * 0.001;
+                targetZoom = Math.max(3, Math.min(10, targetZoom));
+            }
+
+            function onClick() {
+                labelsVisible = !labelsVisible;
+                labelElements.forEach(label => {
+                    label.style.display = labelsVisible ? 'block' : 'none';
+ });
+            }
+
+            p.draw = () => {
+                // Calculate frame rate and adjust quality if needed
+                const now = p.millis();
+                const deltaTime = now - lastFrameTime;
+                lastFrameTime = now;
+                frameRate = 1000 / deltaTime;
+
+                if (frameRate < 30 && quality > 0.5) {
+                    quality = Math.max(0.5, quality - 0.1);
+                    renderer.setPixelRatio(window.devicePixelRatio * quality);
+                } else if (frameRate > 50 && quality < 1.5) {
+                    quality = Math.min(1.5, quality + 0.1);
+                    renderer.setPixelRatio(window.devicePixelRatio * quality);
+                }
+
+                // Smooth camera rotation
+                if (autoRotate) {
+                    targetRotation.y += autoRotateSpeed;
+                }
+
+                currentRotation.x = p.lerp(currentRotation.x, targetRotation.x, 0.1);
+                currentRotation.y = p.lerp(currentRotation.y, targetRotation.y, 0.1);
+                camera.position.x = zoom * Math.sin(currentRotation.y) * Math.cos(currentRotation.x);
+                camera.position.y = zoom * Math.sin(currentRotation.x);
+                camera.position.z = zoom * Math.cos(currentRotation.y) * Math.cos(currentRotation.x);
+                camera.lookAt(0, 0, 0);
+
+                // Smooth zoom
+                zoom = p.lerp(zoom, targetZoom, 0.1);
+
+                // Update moons
+                moons.forEach((moon, i) => {
+                    moon.angle += moon.data.speed;
+                    moon.mesh.position.x = Math.cos(moon.angle) * moon.data.distance;
+                    moon.mesh.position.z = Math.sin(moon.angle) * moon.data.distance;
+
+                    // Update labels
+                    if (labelsVisible) {
+                        const moonPosition = moon.mesh.position.clone().project(camera);
+                        const x = (moonPosition.x * 0.5 + 0.5) * renderer.domElement.clientWidth;
+                        const y = (-(moonPosition.y * 0.5) + 0.5) * renderer.domElement.clientHeight;
+                        labelElements[i].style.left = `${x}px`;
+                        labelElements[i].style.top = `${y}px`;
+                    }
+                });
+
+                // Rotate Saturn and rings
+                saturn.rotation.y += 0.002;
+                rings.rotation.y += 0.001;
+
+                renderer.render(scene, camera);
+            };
+        };
+
+        new p5(sketch);
+    </script>
+
+              
+          
+                
+          
+              
